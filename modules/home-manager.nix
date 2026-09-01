@@ -205,16 +205,21 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (assert
-    (cfg.backend != "cohere-transcribe" || cfg.language == null || builtins.elem cfg.language cohereLanguages)
-    || abort "services.hyprwhspr: cohere-transcribe unterstützt language '${toString cfg.language}' nicht (erlaubt: ${builtins.concatStringsSep ", " cohereLanguages}).";
-  assert
-    (cfg.backend != "rest-api" || cfg.restApi.endpointUrl != null)
-    || abort "services.hyprwhspr: backend 'rest-api' braucht services.hyprwhspr.restApi.endpointUrl.";
-  assert
-    (cfg.backend != "realtime-ws" || cfg.realtimeWs.url != null)
-    || abort "services.hyprwhspr: backend 'realtime-ws' braucht services.hyprwhspr.realtimeWs.url.";
-  {
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.backend != "cohere-transcribe" || cfg.language == null || builtins.elem cfg.language cohereLanguages;
+        message = "services.hyprwhspr: cohere-transcribe unterstützt language '${toString cfg.language}' nicht (erlaubt: ${builtins.concatStringsSep ", " cohereLanguages}).";
+      }
+      {
+        assertion = cfg.backend != "rest-api" || cfg.restApi.endpointUrl != null;
+        message = "services.hyprwhspr: backend 'rest-api' braucht services.hyprwhspr.restApi.endpointUrl.";
+      }
+      {
+        assertion = cfg.backend != "realtime-ws" || cfg.realtimeWs.url != null;
+        message = "services.hyprwhspr: backend 'realtime-ws' braucht services.hyprwhspr.realtimeWs.url.";
+      }
+    ];
     home.packages = [
       cfg.package
       pkgs.wl-clipboard
@@ -373,5 +378,5 @@ in
         };
       };
     };
-  });
+  };
 }
