@@ -8,11 +8,15 @@ let
 
   # Backend-Klassifikation
   whisperFamily = [ "cpu" "nvidia" "vulkan" "faster-whisper" ];
+  pyCpp = [ "cpu" "nvidia" "vulkan" ];
   mlLocal = whisperFamily ++ [ "onnx-asr" "cohere-transcribe" ];
   cloudBackends = [ "rest-api" "realtime-ws" ];
   isWhisper = builtins.elem cfg.backend whisperFamily;
   isMlLocal = builtins.elem cfg.backend mlLocal;
   autoDetect = cfg.backend == null;
+  # Stale ggml-Modelle (pywhispercpp) räumen wir weg, wenn das Backend sie
+  # nicht nutzt (faster-whisper/onnx-asr/cohere/cloud laden eigene Modelle).
+  cleanupStalePycpp = cfg.backend != null && !builtins.elem cfg.backend pyCpp;
 
   # Python-Interpreter fürs Venv: per Option festlegbar (faster-whisper/cohere
   # brauchen Python 3.13), sonst pkgs.python3. `withPackages` legt dieselben
@@ -269,6 +273,13 @@ in
               :
             else
               echo "model download failed (best effort)" >&2
+            fi
+            ''}
+
+            # --- Stale whisper.cpp-Modelle aufräumen (nicht-pywcpp-Backends) ---
+            ${lib.optionalString cleanupStalePycpp ''
+            if [ -d "$HOME/.local/share/pywhispercpp/models" ]; then
+              rm -f "$HOME/.local/share/pywhispercpp/models"/ggml-*.bin 2>/dev/null || true
             fi
             ''}
 
