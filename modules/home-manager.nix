@@ -8,7 +8,7 @@ let
   # sonst das vom Modul mitgelieferte pkgs.python3.
   pyPkgs = if cfg.python != null then cfg.python else pkgs.python3;
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
-  pySite = p: "${p}/lib/${p.libPrefix}/site-packages";
+  pySite = p: "${p}/lib/${pyPkgs.libPrefix}/site-packages";
 in
 {
   options.services.hyprwhspr = {
