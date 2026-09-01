@@ -61,10 +61,15 @@ services.hyprwhspr = {
 | --------------- | --------- | ------------------------------------------------------- |
 | `enable`        | `false`   | Enable the user service, tray deps and model provisioning |
 | `package`       | `pkgs.hyprwhspr` | Package to use (overlay provides `pkgs.hyprwhspr`)       |
-| `backend`       | `null`    | Backend for `setup auto` (e.g. `"faster-whisper"`, `"nvidia"`, `"cpu"`); `null` = auto-detect |
+| `backend`       | `null`    | Backend: `"faster-whisper"`, `"nvidia"`, `"vulkan"`, `"cpu"`, `"onnx-asr"`, `"cohere-transcribe"`, `"rest-api"`, `"realtime-ws"`; `null` = auto-detect |
 | `python`        | `null`    | Python for the venv (e.g. `pkgs.python313` for faster-whisper; `null` = `pkgs.python3`) |
-| `model`         | `small`   | Whisper model to download and configure                  |
+| `model`         | `small`   | Whisper model (cpu/nvidia/vulkan/faster-whisper)          |
+| `onnxAsr.model` | `nemo-parakeet-tdt-0.6b-v3` | onnx-asr model id                       |
 | `language`      | `null`    | Locked language (e.g. `"de"`); `null` = auto-detect      |
+| `fasterWhisper.device` | `null` | `"auto"`/`"cpu"`/`"cuda"` override                    |
+| `fasterWhisper.computeType` | `null` | `"auto"`/`"int8"`/`"int8_float16"`/`"float16"`/`"float32"` |
+| `restApi.*`     | `null`    | `endpointUrl` (Pflicht), `provider`, `apiKey`, `timeout`, `headers`, `body` |
+| `realtimeWs.*`  | `null`    | `url` (Pflicht), `model`                                  |
 | `noctalia.enable` | `false` | Install/enable the Noctalia bar widget (noctwhspr)      |
 
 ### NixOS (`services.hyprwhspr.system.*`)
