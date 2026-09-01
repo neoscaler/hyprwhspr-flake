@@ -4,11 +4,22 @@ let
   cfg = config.services.hyprwhspr;
   # Wrapper (setzt pythonEnv-PATH für CLI-Kommandos wie `setup auto`)
   bin = "${cfg.package}/bin/hyprwhspr";
-  # Python fürs Venv: per Option festlegbar (faster-whisper braucht Python 3.13),
-  # sonst das vom Modul mitgelieferte pkgs.python3.
-  pyPkgs = if cfg.python != null then cfg.python else pkgs.python3;
+  # Python-Interpreter fürs Venv: per Option festlegbar (faster-whisper braucht
+  # Python 3.13), sonst pkgs.python3. `withPackages` legt dieselben Runtime-Deps
+  # wie das Paket hinein (numpy, evdev, sounddevice, …); das Venv nutzt sie via
+  # --system-site-packages, damit pip nichts selbst kompilieren muss.
+  interp = if cfg.python != null then cfg.python else pkgs.python3;
+  venvPython = interp.withPackages (ps: with ps; [
+    sounddevice
+    soxr
+    pyudev
+    pulsectl
+    rich
+    evdev
+    numpy
+  ]);
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
-  pySite = p: "${p}/lib/${pyPkgs.libPrefix}/site-packages";
+  pySite = p: "${p}/lib/${interp.libPrefix}/site-packages";
 in
 {
   options.services.hyprwhspr = {
@@ -35,9 +46,10 @@ in
       type = lib.types.nullOr lib.types.package;
       default = null;
       description = ''
-        Python-Interpreter fürs hyprwhspr-Venv. Standard: pkgs.python3. Für das
-        faster-whisper-Backend pkgs.python313 verwenden ('av' hat für das
-        nicht-free-threaded 3.14 keine fertigen Wheels).
+        Python-Interpreter fürs hyprwhspr-Venv (wird automatisch mit den
+        Runtime-Deps numpy/evdev/sounddevice/… gewrappt). Standard: pkgs.python3.
+        Für das faster-whisper-Backend pkgs.python313 verwenden ('av' hat für
+        das nicht-free-threaded 3.14 keine fertigen Wheels).
       '';
     };
 
@@ -99,7 +111,7 @@ in
             if [ "$needs_setup" = 1 ]; then
               ${bin} setup auto --model ${cfg.model} \
                 ${lib.optionalString (cfg.backend != null) "--backend ${cfg.backend}"} \
-                ${lib.optionalString (cfg.python != null) "--python ${cfg.python}/bin/python"} \
+                --python ${venvPython}/bin/python \
                 --no-systemd --no-mic-osd --no-waybar
             fi
             # Modell-Download ist idempotent; danach Config deterministisch setzen.
@@ -189,9 +201,13 @@ in
             # dbus-python + PyGObject für MEDIA_PAUSER (MPRIS pausieren) und
             # SUSPEND_MONITOR; GLib-Typelibs über GI_TYPELIB_PATH/LD_LIBRARY_PATH.
             # Site-Packages folgen dem Venv-Python (pyPkgs), sonst Version-Mismatch.
-            "PYTHONPATH=${pySite pyPkgs.pkgs.pygobject3}:${pySite pyPkgs.pkgs.dbus-python}"
+            "PYTHONPATH=${pySite interp.pkgs.pygobject3}:${pySite interp.pkgs.dbus-python}"
             "GI_TYPELIB_PATH=${pkgs.glib.out}/lib/girepository-1.0"
-            "LD_LIBRARY_PATH=${pkgs.glib.out}/lib"
+            # NixOS: Pip-Wheels (av/ffmpeg) laden schwachgebundene System-Libs
+            # (libz, libbz2, liblzma, libstdc++) — ohne LD_LIBRARY_PATH findet
+            # sie der Loader auf NixOS nicht (kein globales ld.so.conf).
+            # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber).
+            "LD_LIBRARY_PATH=${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
           ];
           Restart = "on-failure";
           RestartSec = 2;
