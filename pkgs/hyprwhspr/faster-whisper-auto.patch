@@ -1,0 +1,31 @@
+diff --git a/lib/cli.py b/lib/cli.py
+index fb7f987..93aac1f 100755
+--- a/lib/cli.py
++++ b/lib/cli.py
+@@ -63,7 +63,7 @@ def main():
+                               help='Path to Python executable for venv (e.g., /usr/bin/python3.14)')
+     setup_subparsers = setup_parser.add_subparsers(dest='setup_action', help='Setup actions')
+     auto_parser = setup_subparsers.add_parser('auto', help='Automated setup')
+-    auto_parser.add_argument('--backend', choices=['nvidia', 'vulkan', 'cpu', 'onnx-asr'],
++    auto_parser.add_argument('--backend', choices=['nvidia', 'vulkan', 'cpu', 'onnx-asr', 'faster-whisper'],
+                              help='Backend to install (default: auto-detect GPU)')
+     auto_parser.add_argument('--model', help='Model to download (default: base for whisper, auto for onnx-asr)')
+     auto_parser.add_argument('--no-waybar', action='store_true', help='Skip bar integration (Waybar/Noctalia)')
+diff --git a/lib/src/cli/install.py b/lib/src/cli/install.py
+index e4342bc..ee6b1fe 100644
+--- a/lib/src/cli/install.py
++++ b/lib/src/cli/install.py
+@@ -341,6 +341,13 @@ def omarchy_command(args=None):
+         onnx_model = explicit_model or 'nemo-parakeet-tdt-0.6b-v3'
+         config.set_setting('onnx_asr_model', onnx_model)
+         log_info(f"Configured onnx-asr with model: {onnx_model}")
++    elif backend == 'faster-whisper':
++        config.set_setting('transcription_backend', 'faster-whisper')
++        # Set whisper model (defaults to 'base'); faster-whisper lädt das Modell
++        # beim ersten Lauf von HuggingFace (CTranslate2-Gewichte).
++        whisper_model = explicit_model or 'base'
++        config.set_setting('model', whisper_model)
++        log_info(f"Configured faster-whisper with model: {whisper_model}")
+     else:
+         config.set_setting('transcription_backend', 'pywhispercpp')
+         # Set whisper model (defaults to 'base')

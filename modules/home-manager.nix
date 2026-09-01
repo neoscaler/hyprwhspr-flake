@@ -4,8 +4,11 @@ let
   cfg = config.services.hyprwhspr;
   # Wrapper (setzt pythonEnv-PATH für CLI-Kommandos wie `setup auto`)
   bin = "${cfg.package}/bin/hyprwhspr";
-  # site-packages eines Python-Pakets im Store (Python 3.14 vom Venv)
-  pySite = p: "${p}/lib/${pkgs.python3.libPrefix}/site-packages";
+  # Python fürs Venv: per Option festlegbar (faster-whisper braucht Python 3.13),
+  # sonst das vom Modul mitgelieferte pkgs.python3.
+  pyPkgs = if cfg.python != null then cfg.python else pkgs.python3;
+  # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
+  pySite = p: "${p}/lib/${p.libPrefix}/site-packages";
 in
 {
   options.services.hyprwhspr = {
@@ -15,6 +18,27 @@ in
       type = lib.types.package;
       default = pkgs.hyprwhspr;
       description = "hyprwhspr package (the overlay provides pkgs.hyprwhspr).";
+    };
+
+    backend = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Backend für `hyprwhspr setup auto` (--backend). Lokale ML-Backends:
+        'nvidia' (whisper.cpp CUDA, braucht System-CUDA-Toolkit), 'vulkan',
+        'cpu', 'onnx-asr', 'faster-whisper' (CTranslate2, NVIDIA-Treiber reicht).
+        Null lässt hyprwhspr automatisch erkennen.
+      '';
+    };
+
+    python = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = ''
+        Python-Interpreter fürs hyprwhspr-Venv. Standard: pkgs.python3. Für das
+        faster-whisper-Backend pkgs.python313 verwenden ('av' hat für das
+        nicht-free-threaded 3.14 keine fertigen Wheels).
+      '';
     };
 
     model = lib.mkOption {
@@ -44,8 +68,8 @@ in
     ];
 
     systemd.user.services = {
-      # Provisioniert Venv + Backend einmalig (erster Login) und hält danach
-      # Konfiguration + gewähltes Whisper-Modell auf Stand.
+      # Provisioniert Venv + Backend (erster Login bzw. bei Backend-Wechsel) und
+      # hält danach Konfiguration + gewähltes Whisper-Modell auf Stand.
       hyprwhspr-setup = {
         Unit = {
           Description = "hyprwhspr venv + model provision";
@@ -57,12 +81,30 @@ in
           ExecStart = pkgs.writeShellScript "hyprwhspr-setup" ''
             set -euo pipefail
             VENV="''${XDG_DATA_HOME:-$HOME/.local/share}/hyprwhspr/venv/bin/python"
+            CFG="$HOME/.config/hyprwhspr/config.json"
+            # Setup nur, wenn venv fehlt oder das gewünschte Backend nicht
+            # konfiguriert ist (hyprwhspr legt das venv bei Backend-Wechsel neu an).
+            needs_setup=0
             if [ ! -x "$VENV" ]; then
-              ${bin} setup auto --model ${cfg.model} --no-systemd --no-mic-osd --no-waybar
+              needs_setup=1
+            fi
+            ${lib.optionalString (cfg.backend != null) ''
+            if [ -f "$CFG" ] && [ -x "$VENV" ]; then
+              current="$("$VENV" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("transcription_backend",""))' "$CFG" 2>/dev/null || true)"
+              if [ "$current" != "${cfg.backend}" ]; then
+                needs_setup=1
+              fi
+            fi
+            ''}
+            if [ "$needs_setup" = 1 ]; then
+              ${bin} setup auto --model ${cfg.model} \
+                ${lib.optionalString (cfg.backend != null) "--backend ${cfg.backend}"} \
+                ${lib.optionalString (cfg.python != null) "--python ${cfg.python}/bin/python"} \
+                --no-systemd --no-mic-osd --no-waybar
             fi
             # Modell-Download ist idempotent; danach Config deterministisch setzen.
             if ${bin} model download ${cfg.model}; then
-              "$VENV" - "$HOME/.config/hyprwhspr/config.json" <<'PY'
+              "$VENV" - "$CFG" <<'PY'
             import json
             import sys
 
@@ -70,6 +112,8 @@ in
             with open(p) as f:
                 d = json.load(f)
             d["model"] = ${builtins.toJSON cfg.model}
+            ${lib.optionalString (cfg.backend != null) ''
+            d["transcription_backend"] = ${builtins.toJSON cfg.backend}''}
             ${lib.optionalString (cfg.language != null) ''
             d["language"] = ${builtins.toJSON cfg.language}''}
             with open(p, "w") as f:
@@ -144,7 +188,8 @@ in
             "PYTHONUNBUFFERED=1"
             # dbus-python + PyGObject für MEDIA_PAUSER (MPRIS pausieren) und
             # SUSPEND_MONITOR; GLib-Typelibs über GI_TYPELIB_PATH/LD_LIBRARY_PATH.
-            "PYTHONPATH=${pySite pkgs.python3Packages.pygobject3}:${pySite pkgs.python3Packages.dbus-python}"
+            # Site-Packages folgen dem Venv-Python (pyPkgs), sonst Version-Mismatch.
+            "PYTHONPATH=${pySite pyPkgs.pkgs.pygobject3}:${pySite pyPkgs.pkgs.dbus-python}"
             "GI_TYPELIB_PATH=${pkgs.glib.out}/lib/girepository-1.0"
             "LD_LIBRARY_PATH=${pkgs.glib.out}/lib"
           ];

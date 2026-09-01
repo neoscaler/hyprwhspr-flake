@@ -19,6 +19,11 @@ stdenv.mkDerivation {
 
   src = hyprwhspr-src;
 
+  # Drop-in-Patch: erlaubt `faster-whisper` in `hyprwhspr setup auto` (nicht-interaktiv).
+  postPatch = ''
+    patch -p1 < ${./faster-whisper-auto.patch}
+  '';
+
   installPhase = ''
     runHook preInstall
 
