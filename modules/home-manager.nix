@@ -28,8 +28,10 @@ let
   # requests: main.py importiert über den Backends-Router alle Backend-Module
   # (inkl. rest_api_backend) zur Laufzeit — deren `require_package('requests')`
   # killt den Start sonst auf NixOS (reguläre Distros liefern es system-weit).
+  # pycairo: wird vom mic-osd-Overlay nur bei micOsd.enable gebraucht
+  # (import cairo), schadet sonst nicht.
   interp = if cfg.python != null then cfg.python else pkgs.python3;
-  venvPython = interp.withPackages (ps: with ps; [
+  venvPkgs = ps: with ps; [
     sounddevice
     soxr
     pyudev
@@ -39,7 +41,8 @@ let
     numpy
     pygobject3
     requests
-  ]);
+  ] ++ lib.optionals cfg.micOsd.enable [ pycairo ];
+  venvPython = interp.withPackages venvPkgs;
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
   pySite = p: "${p}/lib/${interp.libPrefix}/site-packages";
 
@@ -47,27 +50,24 @@ let
   cohereLanguages = [ "ar" "de" "el" "en" "es" "fr" "it" "ja" "ko" "nl" "pl" "pt" "vi" "zh" ];
 
   langKey = lib.optionalAttrs (cfg.language != null) { language = cfg.language; };
+  # Overlay-Toggle: deterministisch in die Config geschrieben (alle Backends)
+  micOsdKey = lib.optionalAttrs cfg.micOsd.enable { mic_osd_enabled = true; };
 
   # Deterministische Config-Keys je Backend (werden beim Setup in config.json
   # geschrieben; 'auto' lässt hyprwhspr das Backend selbst erkennen).
   keys =
-    if autoDetect then
+    (if autoDetect then
       { model = cfg.model; }
-      // langKey
     else if cfg.backend == "faster-whisper" then
       { transcription_backend = "faster-whisper"; model = cfg.model; faster_whisper_model = cfg.model; }
       // lib.optionalAttrs (cfg.fasterWhisper.device != null) { faster_whisper_device = cfg.fasterWhisper.device; }
       // lib.optionalAttrs (cfg.fasterWhisper.computeType != null) { faster_whisper_compute_type = cfg.fasterWhisper.computeType; }
-      // langKey
     else if isWhisper then
       { transcription_backend = cfg.backend; model = cfg.model; }
-      // langKey
     else if cfg.backend == "onnx-asr" then
       { transcription_backend = "onnx-asr"; onnx_asr_model = cfg.onnxAsr.model; }
-      // langKey
     else if cfg.backend == "cohere-transcribe" then
       { transcription_backend = "cohere-transcribe"; }
-      // langKey
     else if cfg.backend == "rest-api" then
       { transcription_backend = "rest-api"; rest_endpoint_url = cfg.restApi.endpointUrl; }
       // lib.optionalAttrs (cfg.restApi.provider != null) { rest_api_provider = cfg.restApi.provider; }
@@ -75,13 +75,13 @@ let
       // lib.optionalAttrs (cfg.restApi.timeout != null) { rest_timeout = cfg.restApi.timeout; }
       // lib.optionalAttrs (cfg.restApi.headers != null) { rest_headers = cfg.restApi.headers; }
       // lib.optionalAttrs (cfg.restApi.body != null) { rest_body = cfg.restApi.body; }
-      // langKey
     else if cfg.backend == "realtime-ws" then
       { transcription_backend = "realtime-ws"; websocket_url = cfg.realtimeWs.url; }
       // lib.optionalAttrs (cfg.realtimeWs.model != null) { websocket_model = cfg.realtimeWs.model; }
-      // langKey
     else
-      { };
+      { })
+    // langKey
+    // micOsdKey;
 
   # setup auto bekommt nur für lokale ML-Backends ein --backend; das --model
   # ist Whisper-Modell (auto/Whisper-Familie) bzw. das onnx-asr-Modell.
@@ -116,6 +116,14 @@ let
     # sie der Loader auf NixOS nicht (kein globales ld.so.conf).
     # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber).
     "LD_LIBRARY_PATH=${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
+  ]
+  # mic-osd-Overlay (GTK4 + LayerShell): PyGObject-GTK braucht die GTK- und
+  # gtk4-layer-shell-Typelibs. pygobject3 liefert nur das GLib-Typelib; ohne
+  # die GTK-Typelibs schlägt 'import cairo'/'import gi' beim Overlay fehl.
+  ++ lib.optionals cfg.micOsd.enable [
+    "GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.gtk4-layer-shell}/lib/girepository-1.0:${pkgs.graphene}/lib/girepository-1.0:${pySite interp.pkgs.pycairo}:${pkgs.glib.out}/lib/girepository-1.0"
+    "LD_LIBRARY_PATH=${pkgs.gtk4}/lib:${pkgs.gtk4-layer-shell}/lib:${pkgs.cairo}/lib:${pkgs.graphene}/lib:${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
+    "XDG_RUNTIME_DIR=/run/user/1000"
   ];
 in
 {
@@ -234,6 +242,10 @@ in
     noctalia = {
       enable = lib.mkEnableOption "Noctalia bar widget (noctwhspr)";
     };
+
+    micOsd = {
+      enable = lib.mkEnableOption "mic-OSD-Overlay (animation waehrend der Aufnahme)";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -281,6 +293,13 @@ in
             if [ ! -x "$VENV" ]; then
               needs_setup=1
             fi
+            # Venv-Interpreter passt nicht mehr zum konfigurierten Wrapper-Python
+            # (bei Flake-Update mit anderem withPackages-Set) → neu aufsetzen.
+            if [ -x "$VENV" ] && [ "$(readlink -f "$VENV")" != "$(readlink -f "${venvPython}/bin/python")" ]; then
+              echo "venv interpreter changed, recreating" >&2
+              rm -rf "$(dirname "$(dirname "$VENV")")"
+              needs_setup=1
+            fi
             ${lib.optionalString (cfg.backend != null) ''
             if [ -f "$CFG" ] && [ -x "$VENV" ]; then
               current="$("$VENV" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("transcription_backend",""))' "$CFG" 2>/dev/null || true)"
@@ -290,7 +309,7 @@ in
             fi
             ''}
             if [ "$needs_setup" = 1 ]; then
-              ${bin} setup auto ${modelArg} ${backendArg} ${pythonArg} --no-systemd --no-mic-osd --no-waybar
+              ${bin} setup auto ${modelArg} ${backendArg} ${pythonArg} --no-systemd ${lib.optionalString (!cfg.micOsd.enable) "--no-mic-osd"} --no-waybar
             fi
             ''}
 
