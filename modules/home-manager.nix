@@ -25,6 +25,9 @@ let
   # pygobject3 zusätzlich: Der Upstream-Installer überspringt den PyGObject-Download
   # (das sonst auf NixOS am fehlenden ninja scheitert) nur, wenn `import gi` im
   # Venv-Python klappt — dafür muss pygobject3 hier mit im Interpreter liegen.
+  # requests: main.py importiert über den Backends-Router alle Backend-Module
+  # (inkl. rest_api_backend) zur Laufzeit — deren `require_package('requests')`
+  # killt den Start sonst auf NixOS (reguläre Distros liefern es system-weit).
   interp = if cfg.python != null then cfg.python else pkgs.python3;
   venvPython = interp.withPackages (ps: with ps; [
     sounddevice
@@ -35,6 +38,7 @@ let
     evdev
     numpy
     pygobject3
+    requests
   ]);
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
   pySite = p: "${p}/lib/${interp.libPrefix}/site-packages";
