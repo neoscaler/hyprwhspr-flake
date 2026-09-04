@@ -370,8 +370,10 @@ in
                     d = json.load(f)
             else:
                 d = {}
-            for k, v in ${builtins.toJSON keys}.items():
-                d[k] = v
+            # JSON-String parsen statt dict-Literal: ${builtins.toJSON keys}
+            # rendert Booleans als 'true' (JSON), was als Python-Literal den
+            # NameError 'true is not defined' wirft (betraf mic_osd_enabled).
+            d.update(json.loads("""${builtins.toJSON keys}"""))
             with open(p, "w") as f:
                 json.dump(d, f, indent=2)
             PY
