@@ -293,12 +293,15 @@ in
             if [ ! -x "$VENV" ]; then
               needs_setup=1
             fi
-            # Venv-Interpreter passt nicht mehr zum konfigurierten Wrapper-Python
-            # (bei Flake-Update mit anderem withPackages-Set) → neu aufsetzen.
-            if [ -x "$VENV" ] && [ "$(readlink -f "$VENV")" != "$(readlink -f "${venvPython}/bin/python")" ]; then
-              echo "venv interpreter changed, recreating" >&2
-              rm -rf "$(dirname "$(dirname "$VENV")")"
-              needs_setup=1
+            # Venv-Interpreter auf die nötigen Module prüfen (statt Store-Pfad:
+            # der ändert sich bei jedem nixpkgs-Update, obwohl das Venv noch
+            # funktioniert — Pfadvergleich würde sonst bei jedem Login neu bauen).
+            if [ -x "$VENV" ]; then
+              if ! "$VENV" -c "import requests, numpy, sounddevice, evdev, pyudev, rich, pulsectl, soxr${lib.optionalString cfg.micOsd.enable ", cairo"}" 2>/dev/null; then
+                echo "venv missing core modules, recreating" >&2
+                rm -rf "$(dirname "$(dirname "$VENV")")"
+                needs_setup=1
+              fi
             fi
             ${lib.optionalString (cfg.backend != null) ''
             if [ -f "$CFG" ] && [ -x "$VENV" ]; then
