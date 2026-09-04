@@ -99,6 +99,30 @@ let
   # laden beim Install bzw. ersten Lauf.
   downloadModel = autoDetect || isWhisper;
 
+  # CUDA-Libs für GPU-Backends (faster-whisper/nvidia): CTranslate2 lädt
+  # libcudart/libcublas/libcudnn; ohne sie fällt faster-whisper auf CPU zurück
+  # (large-v3 = Sekunden pro Satz). /run/opengl-driver/lib hat nur den Treiber.
+  needsCuda = autoDetect || builtins.elem cfg.backend [ "faster-whisper" "nvidia" "vulkan" ];
+  cudaLibPath = lib.optionals needsCuda [
+    "${pkgs.cudaPackages.cuda_cudart}/lib"
+    "${pkgs.cudaPackages.libcublas}/lib"
+    "${pkgs.cudaPackages.cudnn}/lib"
+  ];
+  # Basis-LD_LIBRARY_PATH inkl. CUDA-Libs als eine Zeichenkette; die mic-osd-
+  # Variante setzt sie wieder ein (systemd: letzte Environment=-Zeile gewinnt —
+  # ein Override ohne cudaLibPath würde die GPU-Backends wieder auf CPU stufen).
+  ldBase = lib.concatStringsSep ":" (
+    [
+      "${pkgs.glib.out}/lib"
+      "${pkgs.zlib}/lib"
+      "${pkgs.bzip2}/lib"
+      "${pkgs.xz}/lib"
+      "${pkgs.stdenv.cc.cc.lib}/lib"
+    ]
+    ++ cudaLibPath
+    ++ [ "/run/opengl-driver/lib" ]
+  );
+
   # Gemeinsame Umgebung für Setup und Daemon. Wichtig: Der Setup-Service führt
   # die Backend-Verifikation des Installers aus (venv-python -c "import …"); ohne
   # LD_LIBRARY_PATH scheitert das auf NixOS an den schwachgebundenen Wheel-Libs
@@ -114,15 +138,17 @@ let
     # NixOS: Pip-Wheels (av/ffmpeg) laden schwachgebundene System-Libs
     # (libz, libbz2, liblzma, libstdc++) — ohne LD_LIBRARY_PATH findet
     # sie der Loader auf NixOS nicht (kein globales ld.so.conf).
-    # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber).
-    "LD_LIBRARY_PATH=${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
+    # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber), die
+    # cudaPackages die CTranslate2-Runtime (libcublas.so.12 etc.).
+    "LD_LIBRARY_PATH=${ldBase}"
   ]
   # mic-osd-Overlay (GTK4 + LayerShell): PyGObject-GTK braucht die GTK- und
   # gtk4-layer-shell-Typelibs. pygobject3 liefert nur das GLib-Typelib; ohne
   # die GTK-Typelibs schlägt 'import cairo'/'import gi' beim Overlay fehl.
   ++ lib.optionals cfg.micOsd.enable [
     "GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.gtk4-layer-shell}/lib/girepository-1.0:${pkgs.graphene}/lib/girepository-1.0:${pySite interp.pkgs.pycairo}:${pkgs.glib.out}/lib/girepository-1.0"
-    "LD_LIBRARY_PATH=${pkgs.gtk4}/lib:${pkgs.gtk4-layer-shell}/lib:${pkgs.cairo}/lib:${pkgs.graphene}/lib:${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
+    # ldBase vorn ergänzt (GTK4/CDK-Libs), CUDA-Teil bleibt erhalten.
+    "LD_LIBRARY_PATH=${pkgs.gtk4}/lib:${pkgs.gtk4-layer-shell}/lib:${pkgs.cairo}/lib:${pkgs.graphene}/lib:${ldBase}"
     "XDG_RUNTIME_DIR=/run/user/1000"
   ];
 in
@@ -382,8 +408,10 @@ in
             "pipewire.service"
             "wireplumber.service"
           ];
-          Requires = [ "hyprwhspr-setup.service" ];
-          Wants = [ "pipewire.service" "wireplumber.service" ];
+          # Wants statt Requires: Schlägt das Setup (z.B. Venv-Rebuild nach
+          # Upgrade) einmal fehl, bleibt der Daemon durch Restart=on-failure
+          # im Retry, statt dauerhaft per 'dependency' gestoppt zu werden.
+          Wants = [ "hyprwhspr-setup.service" "pipewire.service" "wireplumber.service" ];
         };
 
         Service = {
@@ -416,7 +444,10 @@ in
           '';
           Environment = serviceEnv;
           Restart = "on-failure";
-          RestartSec = 2;
+          RestartSec = 5;
+          # Kein Start-Limit: Der Daemon darf nach einem langen Venv-Rebuild
+          # nicht dauerhaft aufgeben (sonst bleibt er bis zum manuellen Start tot).
+          StartLimitIntervalSec = 0;
           StandardOutput = "journal";
           StandardError = "journal";
         };
