@@ -93,6 +93,13 @@ services.hyprwhspr = {
   when its id is in `[plugins].enabled` (its own runtime `settings.toml`), so
   activation is delegated to the idempotent `hyprwhspr noctalia install` run
   best-effort at login. Requires `usrLibSymlink` for the widget's tray lookup.
+
+- **mic-OSD-Overlay wird NICHT unterstützt.** Das Layer-Shell-Overlay
+  (`hyprwhspr mic-osd`) braucht GTK4- + `gtk4-layer-shell`-GIR/Typelibs,
+  die im NixOS-Store nicht sauber auflösbar sind (fehlendes `Cairo-1.0.typelib`).
+  Der Modul-Setup läuft deshalb immer mit `--no-mic-osd`;
+  `mic_osd_enabled` wird nicht in `config.json` gesetzt. Aufnahme-Status
+  erscheint stattdessen über eure Bare-Übersicht (z.B. Noctalia-/Waybar-Tray).
 - Requires `nixpkgs.overlays = [ hyprwhspr-flake.overlays.default ]` for the
   `pkgs.hyprwhspr` default (or set the `package` option explicitly).
 

@@ -28,8 +28,6 @@ let
   # requests: main.py importiert über den Backends-Router alle Backend-Module
   # (inkl. rest_api_backend) zur Laufzeit — deren `require_package('requests')`
   # killt den Start sonst auf NixOS (reguläre Distros liefern es system-weit).
-  # pycairo: wird vom mic-osd-Overlay nur bei micOsd.enable gebraucht
-  # (import cairo), schadet sonst nicht.
   interp = if cfg.python != null then cfg.python else pkgs.python3;
   venvPkgs = ps: with ps; [
     sounddevice
@@ -41,7 +39,7 @@ let
     numpy
     pygobject3
     requests
-  ] ++ lib.optionals cfg.micOsd.enable [ pycairo ];
+  ];
   venvPython = interp.withPackages venvPkgs;
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
   pySite = p: "${p}/lib/${interp.libPrefix}/site-packages";
@@ -50,8 +48,6 @@ let
   cohereLanguages = [ "ar" "de" "el" "en" "es" "fr" "it" "ja" "ko" "nl" "pl" "pt" "vi" "zh" ];
 
   langKey = lib.optionalAttrs (cfg.language != null) { language = cfg.language; };
-  # Overlay-Toggle: deterministisch in die Config geschrieben (alle Backends)
-  micOsdKey = lib.optionalAttrs cfg.micOsd.enable { mic_osd_enabled = true; };
 
   # Deterministische Config-Keys je Backend (werden beim Setup in config.json
   # geschrieben; 'auto' lässt hyprwhspr das Backend selbst erkennen).
@@ -81,7 +77,10 @@ let
     else
       { })
     // langKey
-    // micOsdKey;
+    # mic-OSD-Overlay wird nicht unterstützt (fehlende GTK4/LayerShell-Typelibs
+    # im NixOS-Store). Key deterministisch aus, da Upstream ohne Key 'true'
+    # annimmt und das Overlay sonst beim Daemon-Start versucht.
+    // { mic_osd_enabled = false; };
 
   # setup auto bekommt nur für lokale ML-Backends ein --backend; das --model
   # ist Whisper-Modell (auto/Whisper-Familie) bzw. das onnx-asr-Modell.
@@ -108,20 +107,6 @@ let
     "${pkgs.cudaPackages.libcublas}/lib"
     "${pkgs.cudaPackages.cudnn}/lib"
   ];
-  # Basis-LD_LIBRARY_PATH inkl. CUDA-Libs als eine Zeichenkette; die mic-osd-
-  # Variante setzt sie wieder ein (systemd: letzte Environment=-Zeile gewinnt —
-  # ein Override ohne cudaLibPath würde die GPU-Backends wieder auf CPU stufen).
-  ldBase = lib.concatStringsSep ":" (
-    [
-      "${pkgs.glib.out}/lib"
-      "${pkgs.zlib}/lib"
-      "${pkgs.bzip2}/lib"
-      "${pkgs.xz}/lib"
-      "${pkgs.stdenv.cc.cc.lib}/lib"
-    ]
-    ++ cudaLibPath
-    ++ [ "/run/opengl-driver/lib" ]
-  );
 
   # Gemeinsame Umgebung für Setup und Daemon. Wichtig: Der Setup-Service führt
   # die Backend-Verifikation des Installers aus (venv-python -c "import …"); ohne
@@ -140,16 +125,7 @@ let
     # sie der Loader auf NixOS nicht (kein globales ld.so.conf).
     # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber), die
     # cudaPackages die CTranslate2-Runtime (libcublas.so.12 etc.).
-    "LD_LIBRARY_PATH=${ldBase}"
-  ]
-  # mic-osd-Overlay (GTK4 + LayerShell): PyGObject-GTK braucht die GTK- und
-  # gtk4-layer-shell-Typelibs. pygobject3 liefert nur das GLib-Typelib; ohne
-  # die GTK-Typelibs schlägt 'import cairo'/'import gi' beim Overlay fehl.
-  ++ lib.optionals cfg.micOsd.enable [
-    "GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.gtk4-layer-shell}/lib/girepository-1.0:${pkgs.graphene}/lib/girepository-1.0:${pySite interp.pkgs.pycairo}:${pkgs.glib.out}/lib/girepository-1.0"
-    # ldBase vorn ergänzt (GTK4/CDK-Libs), CUDA-Teil bleibt erhalten.
-    "LD_LIBRARY_PATH=${pkgs.gtk4}/lib:${pkgs.gtk4-layer-shell}/lib:${pkgs.cairo}/lib:${pkgs.graphene}/lib:${ldBase}"
-    "XDG_RUNTIME_DIR=/run/user/1000"
+    "LD_LIBRARY_PATH=${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${lib.concatStringsSep ":" cudaLibPath}:/run/opengl-driver/lib"
   ];
 in
 {
@@ -268,10 +244,6 @@ in
     noctalia = {
       enable = lib.mkEnableOption "Noctalia bar widget (noctwhspr)";
     };
-
-    micOsd = {
-      enable = lib.mkEnableOption "mic-OSD-Overlay (animation waehrend der Aufnahme)";
-    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -323,7 +295,7 @@ in
             # der ändert sich bei jedem nixpkgs-Update, obwohl das Venv noch
             # funktioniert — Pfadvergleich würde sonst bei jedem Login neu bauen).
             if [ -x "$VENV" ]; then
-              if ! "$VENV" -c "import requests, numpy, sounddevice, evdev, pyudev, rich, pulsectl, soxr${lib.optionalString cfg.micOsd.enable ", cairo"}" 2>/dev/null; then
+              if ! "$VENV" -c "import requests, numpy, sounddevice, evdev, pyudev, rich, pulsectl, soxr" 2>/dev/null; then
                 echo "venv missing core modules, recreating" >&2
                 rm -rf "$(dirname "$(dirname "$VENV")")"
                 needs_setup=1
@@ -338,7 +310,9 @@ in
             fi
             ''}
             if [ "$needs_setup" = 1 ]; then
-              ${bin} setup auto ${modelArg} ${backendArg} ${pythonArg} --no-systemd ${lib.optionalString (!cfg.micOsd.enable) "--no-mic-osd"} --no-waybar
+              # --no-mic-osd immer: das Layer-Shell-Overlay wird nicht unterstützt
+              # (GTK4/Gtk4LayerShell-Typelibs fehlen im NixOS-Store).
+              ${bin} setup auto ${modelArg} ${backendArg} ${pythonArg} --no-systemd --no-mic-osd --no-waybar
             fi
             ''}
 
@@ -372,7 +346,7 @@ in
                 d = {}
             # JSON-String parsen statt dict-Literal: ${builtins.toJSON keys}
             # rendert Booleans als 'true' (JSON), was als Python-Literal den
-            # NameError 'true is not defined' wirft (betraf mic_osd_enabled).
+            # NameError 'true is not defined' wirft.
             d.update(json.loads("""${builtins.toJSON keys}"""))
             with open(p, "w") as f:
                 json.dump(d, f, indent=2)
