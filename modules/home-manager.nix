@@ -22,6 +22,9 @@ let
   # brauchen Python 3.13), sonst pkgs.python3. `withPackages` legt dieselben
   # Runtime-Deps wie das Paket hinein (numpy, evdev, sounddevice, …); das Venv
   # nutzt sie via --system-site-packages, damit pip nichts selbst kompiliert.
+  # pygobject3 zusätzlich: Der Upstream-Installer überspringt den PyGObject-Download
+  # (das sonst auf NixOS am fehlenden ninja scheitert) nur, wenn `import gi` im
+  # Venv-Python klappt — dafür muss pygobject3 hier mit im Interpreter liegen.
   interp = if cfg.python != null then cfg.python else pkgs.python3;
   venvPython = interp.withPackages (ps: with ps; [
     sounddevice
@@ -31,6 +34,7 @@ let
     rich
     evdev
     numpy
+    pygobject3
   ]);
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
   pySite = p: "${p}/lib/${interp.libPrefix}/site-packages";
@@ -90,6 +94,25 @@ let
   # Modell-Download nur für die Whisper-Familie (+ auto); onnx-asr/cohere/Cloud
   # laden beim Install bzw. ersten Lauf.
   downloadModel = autoDetect || isWhisper;
+
+  # Gemeinsame Umgebung für Setup und Daemon. Wichtig: Der Setup-Service führt
+  # die Backend-Verifikation des Installers aus (venv-python -c "import …"); ohne
+  # LD_LIBRARY_PATH scheitert das auf NixOS an den schwachgebundenen Wheel-Libs
+  # (libz, libstdc++, …) und hyprwhspr.service startet wegen Requires nie.
+  serviceEnv = [
+    "HYPRWHSPR_ROOT=${cfg.package}/hyprwhspr"
+    "PYTHONUNBUFFERED=1"
+    # dbus-python + PyGObject für MEDIA_PAUSER (MPRIS pausieren) und
+    # SUSPEND_MONITOR; GLib-Typelibs über GI_TYPELIB_PATH/LD_LIBRARY_PATH.
+    # Site-Packages folgen dem Venv-Python (interp), sonst Version-Mismatch.
+    "PYTHONPATH=${pySite interp.pkgs.pygobject3}:${pySite interp.pkgs.dbus-python}"
+    "GI_TYPELIB_PATH=${pkgs.glib.out}/lib/girepository-1.0"
+    # NixOS: Pip-Wheels (av/ffmpeg) laden schwachgebundene System-Libs
+    # (libz, libbz2, liblzma, libstdc++) — ohne LD_LIBRARY_PATH findet
+    # sie der Loader auf NixOS nicht (kein globales ld.so.conf).
+    # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber).
+    "LD_LIBRARY_PATH=${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
+  ];
 in
 {
   options.services.hyprwhspr = {
@@ -313,6 +336,7 @@ in
             ''}
           '';
           TimeoutStartSec = 0;
+          Environment = serviceEnv;
           StandardOutput = "journal";
           StandardError = "journal";
         };
@@ -364,20 +388,7 @@ in
             pkill -9 -f "hyprwhspr-ydotool.soc[k]" 2>/dev/null
             true
           '';
-          Environment = [
-            "HYPRWHSPR_ROOT=${cfg.package}/hyprwhspr"
-            "PYTHONUNBUFFERED=1"
-            # dbus-python + PyGObject für MEDIA_PAUSER (MPRIS pausieren) und
-            # SUSPEND_MONITOR; GLib-Typelibs über GI_TYPELIB_PATH/LD_LIBRARY_PATH.
-            # Site-Packages folgen dem Venv-Python (interp), sonst Version-Mismatch.
-            "PYTHONPATH=${pySite interp.pkgs.pygobject3}:${pySite interp.pkgs.dbus-python}"
-            "GI_TYPELIB_PATH=${pkgs.glib.out}/lib/girepository-1.0"
-            # NixOS: Pip-Wheels (av/ffmpeg) laden schwachgebundene System-Libs
-            # (libz, libbz2, liblzma, libstdc++) — ohne LD_LIBRARY_PATH findet
-            # sie der Loader auf NixOS nicht (kein globales ld.so.conf).
-            # /run/opengl-driver/lib liefert libcuda.so.1 (NVIDIA-Treiber).
-            "LD_LIBRARY_PATH=${pkgs.glib.out}/lib:${pkgs.zlib}/lib:${pkgs.bzip2}/lib:${pkgs.xz}/lib:${pkgs.stdenv.cc.cc.lib}/lib:/run/opengl-driver/lib"
-          ];
+          Environment = serviceEnv;
           Restart = "on-failure";
           RestartSec = 2;
           StandardOutput = "journal";
