@@ -98,6 +98,10 @@ let
   # laden beim Install bzw. ersten Lauf.
   downloadModel = autoDetect || isWhisper;
 
+  # Marker-Name fuer den Modell-Download (Backend+Modell). Aendert sich einer,
+  # wird neu geladen; sonst entfaellt der teure Download/Modell-Load beim Login.
+  modelMarker = ".model-${if cfg.backend == null then "auto" else cfg.backend}-${cfg.model}";
+
   # CUDA-Libs für GPU-Backends (faster-whisper/nvidia): CTranslate2 lädt
   # libcudart/libcublas/libcudnn; ohne sie fällt faster-whisper auf CPU zurück
   # (large-v3 = Sekunden pro Satz). /run/opengl-driver/lib hat nur den Treiber.
@@ -276,6 +280,13 @@ in
         Unit = {
           Description = "hyprwhspr provision + config";
           PartOf = [ "graphical-session.target" ];
+          # Explizites After= bricht die implizite Ordering-Kette: das Target
+          # erhaelt automatisch After= fuer jede per Wants eingebundene Unit.
+          # Bei einer Oneshot (dieses Setup) wartet das Target dann auf deren
+          # Ende -> Noctalia/Shell startet erst nach dem Provisioning. Mit
+          # After=graphical-session.target erkennt systemd den Zyklus und
+          # verwirft die implizite Ordering; das Setup laeuft nach der Session.
+          After = [ "graphical-session.target" ];
         };
 
         Service = {
@@ -317,11 +328,19 @@ in
             ''}
 
             # --- Modell-Download (Whisper-Familie) — idempotent, nicht fatal ---
+            # Marker pro Backend+Modell: der Download laedt das Modell komplett
+            # (large-v3 float32 ~8.8G Peak, mehrere Sekunden) und traf frueher
+            # bei JEDEM Login HuggingFace. Jetzt nur beim ersten Mal bzw. nach
+            # Backend-/Modell-Wechsel.
             ${lib.optionalString downloadModel ''
-            if ${bin} model download ${cfg.model}; then
-              :
-            else
-              echo "model download failed (best effort)" >&2
+            MARKER="''${XDG_DATA_HOME:-$HOME/.local/share}/hyprwhspr/${modelMarker}"
+            if [ ! -f "$MARKER" ]; then
+              if ${bin} model download ${cfg.model}; then
+                mkdir -p "$(dirname "$MARKER")"
+                touch "$MARKER"
+              else
+                echo "model download failed (best effort)" >&2
+              fi
             fi
             ''}
 
