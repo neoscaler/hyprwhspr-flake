@@ -2,7 +2,7 @@
 
 Declarative [hyprwhspr](https://github.com/goodroot/hyprwhspr) speech-to-text
 dictation for NixOS + Home Manager: Nix package, Home Manager module and
-NixOS module. Upstream is pinned to the release tag **v1.42.3** (not the
+NixOS module. Upstream is pinned to the release tag **v1.43.0** (not the
 moving `main` branch).
 
 ## Usage
@@ -68,7 +68,7 @@ services.hyprwhspr = {
 | `language`      | `null`    | Locked language (e.g. `"de"`); `null` = auto-detect      |
 | `fasterWhisper.device` | `null` | `"auto"`/`"cpu"`/`"cuda"` override                    |
 | `fasterWhisper.computeType` | `null` | `"auto"`/`"int8"`/`"int8_float16"`/`"float16"`/`"float32"` |
-| `restApi.*`     | `null`    | `endpointUrl` (Pflicht), `provider`, `apiKey`, `timeout`, `headers`, `body` |
+| `restApi.*`     | `null`    | `endpointUrl` (Pflicht), `provider`, `timeout`, `secretsFile` (JSON-Datei mit `rest_api_key`/`rest_headers`/`rest_body`) |
 | `realtimeWs.*`  | `null`    | `url` (Pflicht), `model`                                  |
 | `noctalia.enable` | `false` | Install/enable the Noctalia bar widget (noctwhspr)      |
 
@@ -83,6 +83,15 @@ services.hyprwhspr = {
 
 ## Notes
 
+- **Secrets**: REST-Secrets (`rest_api_key`/`rest_headers`/`rest_body`) gehen
+  nicht über Moduloptionen, sondern über `restApi.secretsFile` (absoluter Pfad
+  zu einer JSON-Datei, z.B. sops/agenix unter `/run/secrets/…`). Der
+  Setup-Service merged sie zur Laufzeit in `~/.config/hyprwhspr/config.json`,
+  damit sie nie im Nix-Store landen.
+- **CUDA-Libs** werden nur bei `backend = "faster-whisper"` oder `"nvidia"`
+  eingebunden. Bei `backend = null` (auto) und NVIDIA also explizit setzen,
+  sonst fehlen `libcudart`/`libcublas`/`libcudnn` zur Laufzeit. Vulkan/CPU
+  ziehen kein CUDA mehr in die Closure.
 - **Venv + model** are provisioned once at first login by the
   `hyprwhspr-setup` user service (idempotent; layer-config updates on later
   logins). Model downloads land in `~/.local/share/hyprwhspr`.

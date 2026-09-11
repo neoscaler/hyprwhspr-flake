@@ -3,27 +3,27 @@
     "hyprwhspr-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1787765038,
-        "narHash": "sha256-LuvaYNRbiGsOrU5TVY9CAN6VPZfEU5fD38xlqyCXP8A=",
+        "lastModified": 1788194787,
+        "narHash": "sha256-qDBxyy4pNuyGv+gUuJgQ0usyDA/PcWgLZjd4UH5Y0Q8=",
         "owner": "goodroot",
         "repo": "hyprwhspr",
-        "rev": "d863a21c362bf233d7051417c4d89e6cd2e8d5d2",
+        "rev": "f027876a2e2f4f37e18c2d2143d155a20fdedbb6",
         "type": "github"
       },
       "original": {
         "owner": "goodroot",
-        "ref": "v1.42.3",
+        "ref": "v1.43.0",
         "repo": "hyprwhspr",
         "type": "github"
       }
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1787736819,
-        "narHash": "sha256-cV5xEJJK3BvhU8rEd4mC9UsmDi5qscv/kzGPhBRC5WA=",
+        "lastModified": 1789006805,
+        "narHash": "sha256-xB8mKMOx1IA9vTDNLmJZ6n4wCMq/cuWBBOzGCRnqxrU=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "9fbb54b33e91ee4ca368e35a78e0613c720600b3",
+        "rev": "8ce4ef6cb6f871616146b9fe26d2a5ae594e94fe",
         "type": "github"
       },
       "original": {

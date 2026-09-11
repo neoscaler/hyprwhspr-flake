@@ -19,27 +19,15 @@ let
   cleanupStalePycpp = cfg.backend != null && !builtins.elem cfg.backend pyCpp;
 
   # Python-Interpreter fürs Venv: per Option festlegbar (faster-whisper/cohere
-  # brauchen Python 3.13), sonst pkgs.python3. `withPackages` legt dieselben
-  # Runtime-Deps wie das Paket hinein (numpy, evdev, sounddevice, …); das Venv
-  # nutzt sie via --system-site-packages, damit pip nichts selbst kompiliert.
-  # pygobject3 zusätzlich: Der Upstream-Installer überspringt den PyGObject-Download
-  # (das sonst auf NixOS am fehlenden ninja scheitert) nur, wenn `import gi` im
-  # Venv-Python klappt — dafür muss pygobject3 hier mit im Interpreter liegen.
-  # requests: main.py importiert über den Backends-Router alle Backend-Module
-  # (inkl. rest_api_backend) zur Laufzeit — deren `require_package('requests')`
-  # killt den Start sonst auf NixOS (reguläre Distros liefern es system-weit).
+  # brauchen Python 3.13), sonst pkgs.python3. Die Runtime-Deps kommen aus der
+  # gemeinsamen Liste pkgs/hyprwhspr/python-deps.nix (identisch zum Paket), damit
+  # Paket und Venv nicht auseinanderdriften. Das Venv nutzt sie via
+  # --system-site-packages, damit pip nichts selbst kompiliert.
+  # pygobject3/requests sind dort mit dabei: der Upstream-Installer überspringt
+  # den PyGObject-Download nur, wenn `import gi` im Venv-Python klappt, und
+  # main.py importiert über den Backends-Router u.a. rest_api_backend.
   interp = if cfg.python != null then cfg.python else pkgs.python3;
-  venvPkgs = ps: with ps; [
-    sounddevice
-    soxr
-    pyudev
-    pulsectl
-    rich
-    evdev
-    numpy
-    pygobject3
-    requests
-  ];
+  venvPkgs = import ../pkgs/hyprwhspr/python-deps.nix;
   venvPython = interp.withPackages venvPkgs;
   # site-packages eines Python-Pakets im Store (Version folgt dem Venv-Python)
   pySite = p: "${p}/lib/${interp.libPrefix}/site-packages";
@@ -65,12 +53,12 @@ let
     else if cfg.backend == "cohere-transcribe" then
       { transcription_backend = "cohere-transcribe"; }
     else if cfg.backend == "rest-api" then
+      # Secrets (rest_api_key/rest_headers/rest_body) bewusst NICHT hier: sie
+      # würden über builtins.toJSON in den Store gelangen. Sie kommen zur
+      # Laufzeit aus restApi.secretsFile (siehe Setup-Skript).
       { transcription_backend = "rest-api"; rest_endpoint_url = cfg.restApi.endpointUrl; }
       // lib.optionalAttrs (cfg.restApi.provider != null) { rest_api_provider = cfg.restApi.provider; }
-      // lib.optionalAttrs (cfg.restApi.apiKey != null) { rest_api_key = cfg.restApi.apiKey; }
       // lib.optionalAttrs (cfg.restApi.timeout != null) { rest_timeout = cfg.restApi.timeout; }
-      // lib.optionalAttrs (cfg.restApi.headers != null) { rest_headers = cfg.restApi.headers; }
-      // lib.optionalAttrs (cfg.restApi.body != null) { rest_body = cfg.restApi.body; }
     else if cfg.backend == "realtime-ws" then
       { transcription_backend = "realtime-ws"; websocket_url = cfg.realtimeWs.url; }
       // lib.optionalAttrs (cfg.realtimeWs.model != null) { websocket_model = cfg.realtimeWs.model; }
@@ -105,7 +93,12 @@ let
   # CUDA-Libs für GPU-Backends (faster-whisper/nvidia): CTranslate2 lädt
   # libcudart/libcublas/libcudnn; ohne sie fällt faster-whisper auf CPU zurück
   # (large-v3 = Sekunden pro Satz). /run/opengl-driver/lib hat nur den Treiber.
-  needsCuda = autoDetect || builtins.elem cfg.backend [ "faster-whisper" "nvidia" "vulkan" ];
+  # CUDA-Libs nur für die Backends, die sie wirklich brauchen. Wichtig: nicht an
+  # autoDetect koppeln und vulkan ausschließen — sonst zieht der Default
+  # (backend = null) cudnn/cublas/cudart in jede Closure, auch ohne NVIDIA, und
+  # Vulkan braucht kein CUDA. Für auto + NVIDIA daher explizit
+  # backend = "faster-whisper" (oder "nvidia") setzen.
+  needsCuda = builtins.elem cfg.backend [ "faster-whisper" "nvidia" ];
   cudaLibPath = lib.optionals needsCuda [
     "${pkgs.cudaPackages.cuda_cudart}/lib"
     "${pkgs.cudaPackages.libcublas}/lib"
@@ -210,25 +203,22 @@ in
         default = null;
         description = "REST-API provider id (optional, für bekannte Provider).";
       };
-      apiKey = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "REST-API key (optional, je nach Endpoint).";
-      };
       timeout = lib.mkOption {
         type = lib.types.nullOr lib.types.int;
         default = null;
         description = "REST-API timeout in Sekunden (optional).";
       };
-      headers = lib.mkOption {
-        type = lib.types.nullOr lib.types.attrs;
+      secretsFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Zusätzliche REST-Headers (optional).";
-      };
-      body = lib.mkOption {
-        type = lib.types.nullOr lib.types.attrs;
-        default = null;
-        description = "Zusätzliche REST-Body-Felder (optional).";
+        description = ''
+          Pfad zu einer JSON-Datei mit Secrets (rest_api_key, rest_headers,
+          rest_body). Wird zur Laufzeit im Setup-Service in die config.json
+          gemergt und landet deshalb NIE im Nix-Store. Absoluten Pfad angeben
+          (z.B. sops/agenix-Template unter /run/secrets/…), keine Nix-Path-
+          Literale (die würden in den Store kopiert).
+        '';
+        example = "/run/secrets/hyprwhspr.json";
       };
     };
 
@@ -352,24 +342,26 @@ in
             ''}
 
             # --- Config deterministisch setzen (alle Backends) ---
-            ${venvPython}/bin/python - "$CFG" <<'PY'
-            import json
-            import sys
-            import os
-
-            p = sys.argv[1]
-            if os.path.exists(p):
-                with open(p) as f:
-                    d = json.load(f)
-            else:
-                d = {}
-            # JSON-String parsen statt dict-Literal: ${builtins.toJSON keys}
-            # rendert Booleans als 'true' (JSON), was als Python-Literal den
-            # NameError 'true is not defined' wirft.
-            d.update(json.loads("""${builtins.toJSON keys}"""))
-            with open(p, "w") as f:
-                json.dump(d, f, indent=2)
-            PY
+            # Bestehende config.json wird gemergt, damit manuell gepflegte
+            # Werte erhalten bleiben. Der Store-Teil enthält keine Secrets;
+            # die kommen nur zur Laufzeit aus restApi.secretsFile dazu.
+            NON_SECRET=${pkgs.writeText "hyprwhspr-config.json" (builtins.toJSON keys)}
+            mkdir -p "$(dirname "$CFG")"
+            if [ ! -f "$CFG" ]; then
+              echo '{}' > "$CFG"
+            fi
+            ${pkgs.jq}/bin/jq --slurpfile extra "$NON_SECRET" '. * $extra[0]' "$CFG" > "$CFG.tmp"
+            mv "$CFG.tmp" "$CFG"
+            ${lib.optionalString (cfg.restApi.secretsFile != null) ''
+            # Secrets zur Laufzeit aus secretsFile nachziehen (landet so nie
+            # im Nix-Store): rest_api_key/rest_headers/rest_body.
+            if [ -f "${cfg.restApi.secretsFile}" ]; then
+              ${pkgs.jq}/bin/jq --slurpfile extra "${cfg.restApi.secretsFile}" '. * $extra[0]' "$CFG" > "$CFG.tmp"
+              mv "$CFG.tmp" "$CFG"
+            else
+              echo "restApi.secretsFile ${cfg.restApi.secretsFile} nicht gefunden" >&2
+            fi
+            ''}
 
             ${lib.optionalString cfg.noctalia.enable ''
             # Noctalia-Widget: Da Noctalia Plugins nur lädt, wenn sie in [plugins].enabled
